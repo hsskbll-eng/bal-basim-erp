@@ -289,8 +289,8 @@ export default function Home() {
 
 async function login() {
   const email = auth.email.includes("@")
-    ? auth.email
-    : `${auth.email}@baski.com`
+  ? auth.email
+  : `${auth.email}@balbasim.local`
 
   const { error } = await supabase.auth.signInWithPassword({
     email,
