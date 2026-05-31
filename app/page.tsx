@@ -288,9 +288,11 @@ export default function Home() {
   }
 
 async function login() {
-  const email = auth.email.includes("@")
-  ? auth.email
-  : `${auth.email}@balbasim.com`
+  const username = auth.email.trim().toLowerCase()
+
+  const email = username.includes("@")
+    ? username
+    : `${username}@balbasim.com`
 
   const { error } = await supabase.auth.signInWithPassword({
     email,
