@@ -287,11 +287,20 @@ export default function Home() {
     if ((cs || [])[0]) setJobForm((p) => ({ ...p, customer_id: (cs || [])[0].id }))
   }
 
-  async function login() {
-    const { error } = await supabase.auth.signInWithPassword({ email: auth.email, password: auth.password })
-    if (error) alert(error.message)
-  }
+async function login() {
+  const email = auth.email.includes("@")
+    ? auth.email
+    : `${auth.email}@baski.com`
 
+  const { error } = await supabase.auth.signInWithPassword({
+    email,
+    password: auth.password,
+  })
+
+  if (error) {
+    alert("Kullanıcı adı veya şifre hatalı")
+  }
+}
   async function register() {
     const { error } = await supabase.auth.signUp({ email: auth.email, password: auth.password, options: { data: { full_name: auth.fullName } } })
     if (error) alert(error.message)
@@ -651,7 +660,7 @@ function MobilePanelHero({ stats, alerts, isAdmin }: any) {
 }
 
 function jobNo(job: Job) { const year = String(new Date(job.created_at).getFullYear()).slice(2); return `${String(job.id).padStart(4, "0")}-${year}` }
-function Login({ auth, setAuth, authMode, setAuthMode, login, register }: any) { return <main className="min-h-screen bg-[#071d35] flex items-center justify-center"><div className="bg-white rounded-2xl p-8 w-[420px]"><img src="/logo.png" className="w-56 mx-auto mb-4" /><p className="text-slate-500 mb-6 text-center">Premium ERP Giriş</p>{authMode === "register" && <Input p="Ad Soyad" v={auth.fullName} c={(v: string) => setAuth({ ...auth, fullName: v })} />}<div className="mt-3"><Input p="E-posta" v={auth.email} c={(v: string) => setAuth({ ...auth, email: v })} /></div><div className="mt-3"><Input p="Şifre" type="password" v={auth.password} c={(v: string) => setAuth({ ...auth, password: v })} onKeyDown={(e: any) => { if (e.key === "Enter") login() }} /></div><button onClick={authMode === "login" ? login : register} className="w-full mt-5 bg-blue-600 text-white py-3 rounded-lg font-bold">{authMode === "login" ? "Giriş Yap" : "Kayıt Ol"}</button><button onClick={() => setAuthMode(authMode === "login" ? "register" : "login")} className="w-full mt-3 text-blue-600">{authMode === "login" ? "Hesap oluştur" : "Girişe dön"}</button></div></main> }
+function Login({ auth, setAuth, authMode, setAuthMode, login, register }: any) { return <main className="min-h-screen bg-[#071d35] flex items-center justify-center"><div className="bg-white rounded-2xl p-8 w-[420px]"><img src="/logo.png" className="w-56 mx-auto mb-4" /><p className="text-slate-500 mb-6 text-center">Premium ERP Giriş</p>{authMode === "register" && <Input p="Ad Soyad" v={auth.fullName} c={(v: string) => setAuth({ ...auth, fullName: v })} />}<div className="mt-3"><Input p="Kullanıcı Adı" v={auth.email} c={(v: string) => setAuth({ ...auth, email: v })} /></div><div className="mt-3"><Input p="Şifre" type="password" v={auth.password} c={(v: string) => setAuth({ ...auth, password: v })} onKeyDown={(e: any) => { if (e.key === "Enter") login() }} /></div><button onClick={authMode === "login" ? login : register} className="w-full mt-5 bg-blue-600 text-white py-3 rounded-lg font-bold">{authMode === "login" ? "Giriş Yap" : "Kayıt Ol"}</button><button onClick={() => setAuthMode(authMode === "login" ? "register" : "login")} className="w-full mt-3 text-blue-600">{authMode === "login" ? "Hesap oluştur" : "Girişe dön"}</button></div></main> }
 function tabTitle(tab: Tab) { return { panel: "📋 İş Takip Paneli", newJob: "➕ Yeni İş Girişi", customers: "👥 Müşteriler", allJobs: "📚 Tüm İşler", invoice: "💰 Faturalar", reports: "📊 Raporlar", archive: "🗄 Arşiv", stocks: "📦 Stok", deliveries: "🚚 Teslimat Geçmişi", costs: "📈 Maliyet / Kâr", costSettings: "⚙️ Maliyet Ayarları" }[tab] }
 function Panel({ children }: any) { return <div className="bg-white border rounded-xl p-4 md:p-5 overflow-x-auto">{children}</div> }
 function Section({ title, children }: any) { return <Panel><h2 className="font-black text-lg md:text-xl mb-4">{title}</h2><div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">{children}</div></Panel> }
