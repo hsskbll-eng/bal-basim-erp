@@ -470,6 +470,34 @@ async function login() {
     await loadAll()
   }
 
+  async function createPersonel(form: any) {
+  const { data: sessionData } = await supabase.auth.getSession()
+  const token = sessionData.session?.access_token
+
+  if (!token) return alert("Oturum bulunamadı.")
+
+  const res = await fetch("https://civfxbayfhleuywtrfsb.supabase.co/functions/v1/admin-user-manager", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      username: form.username,
+      password: form.password,
+      full_name: form.full_name,
+      role: form.role || "staff",
+      department: form.department || "Personel",
+    }),
+  })
+
+  const json = await res.json()
+
+  if (!res.ok) return alert(json.error || "Personel oluşturulamadı")
+
+  alert("Personel oluşturuldu.")
+  await loadAll()
+}
   async function addStock() {
     if (!stockForm.name) return alert("Stok adı zorunlu.")
     const { error } = await supabase.from("stocks").insert({ name: stockForm.name, type: stockForm.type, quantity: Number(stockForm.quantity || 0), unit: stockForm.unit, min_quantity: Number(stockForm.min_quantity || 0) })
@@ -612,7 +640,7 @@ async function login() {
         {tab === "costs" && isAdmin && <Panel><JobsTable jobs={activeJobs} isAdmin={true} makeJobPdf={makeJobPdf} showCosts /></Panel>}
         {tab === "costSettings" && isAdmin && <CostSettingsPanel settings={costSettings} setSettings={setCostSettings} save={saveCostSettings} />}
         {tab === "stocks" && isAdmin && <Stocks stocks={stocks} stockForm={stockForm} setStockForm={setStockForm} addStock={addStock} moveStock={moveStock} />}
-        {tab === "staff" && isAdmin && <StaffPanel profiles={staffProfiles} updateStaffProfile={updateStaffProfile} quickAddStaff={quickAddStaff} />}
+        {tab === "staff" && isAdmin && <StaffPanel profiles={staffProfiles} updateStaffProfile={updateStaffProfile} createPersonel={createPersonel} />}
         {tab === "deliveries" && isAdmin && <Panel><Deliveries jobs={activeJobs} /></Panel>}
         {tab === "reports" && isAdmin && <Panel><div className="flex justify-between mb-5"><input type="month" className="border rounded-lg p-2" value={monthFilter} onChange={(e) => setMonthFilter(e.target.value)} /><button onClick={() => makeMonthlyReportPdf(monthlyJobs)} className="bg-slate-900 text-white px-4 py-2 rounded-lg font-bold">Aylık PDF</button></div><JobsTable jobs={monthlyJobs} isAdmin={true} makeJobPdf={makeJobPdf} showCosts /></Panel>}
         {tab === "archive" && isAdmin && <Panel>{archivedJobs.map((j) => <div key={j.id} className="border rounded-lg p-3 mb-2 flex justify-between items-center"><b>{jobNo(j)} {j.customer_name} - {j.job_name}</b><div className="flex gap-2"><button onClick={() => restoreJob(j)} className="bg-blue-600 text-white px-3 py-2 rounded">Geri Al</button><button onClick={() => deleteArchivedJob(j)} className="bg-red-600 text-white px-3 py-2 rounded">Tamamen Sil</button></div></div>)}</Panel>}
@@ -712,53 +740,109 @@ function JobsTable({ jobs, isAdmin, makeJobPdf, showCosts }: any) { return <tabl
 function InvoiceTable({ jobs, updateInvoice, makeJobPdf }: any) { return <table className="w-full text-sm"><thead><tr className="border-b text-left text-slate-500"><th className="py-2">İş No</th><th>Müşteri</th><th>İş</th><th>Tutar</th><th>Durum</th><th>İşlem</th></tr></thead><tbody>{jobs.map((j: Job) => <tr key={j.id} className="border-b"><td className="py-3 font-bold"><button onClick={() => makeJobPdf(j)} className="text-blue-600 hover:underline">{jobNo(j)}</button></td><td>{j.customer_name}</td><td>{j.job_name}</td><td>{Number(j.price || 0).toLocaleString("tr-TR")} ₺</td><td>{invoiceTitle[j.invoice_status]}</td><td className="space-x-2"><button onClick={() => updateInvoice(j, "waiting")} className="bg-slate-200 px-3 py-2 rounded">Bekliyor</button><button onClick={() => updateInvoice(j, "invoiced")} className="bg-green-600 text-white px-3 py-2 rounded">Kesildi</button><button onClick={() => updateInvoice(j, "paid")} className="bg-blue-600 text-white px-3 py-2 rounded">Ödendi</button></td></tr>)}</tbody></table> }
 function Stocks({ stocks, stockForm, setStockForm, addStock, moveStock }: any) { return <div className="grid grid-cols-1 md:grid-cols-3 gap-5"><Panel><h2 className="font-black text-xl mb-4">Stok Ekle</h2><div className="space-y-3"><select value={stockForm.name} onChange={(e) => setStockForm({ ...stockForm, name: e.target.value })} className="border rounded-lg p-2 text-sm w-full"><option value="">Stok Seç</option><option value="1. Hamur">1. Hamur</option><option value="2. Hamur">2. Hamur</option><option value="Kuşe">Kuşe</option><option value="Bristol">Bristol</option><option value="Solvent">Solvent</option><option value="Alkol">Alkol</option><option value="Boya">Boya</option><option value="Sprey Gum">Sprey Gum</option><option value="Tutkal">Tutkal</option><option value="Selefon">Selefon</option><option value="Laminasyon Film">Laminasyon Film</option><option value="Kalıp">Kalıp</option><option value="Mürekkep">Mürekkep</option><option value="Koli">Koli</option><option value="Shrink">Shrink</option></select><select value={stockForm.type} onChange={(e) => setStockForm({ ...stockForm, type: e.target.value })} className="border rounded-lg p-2 text-sm w-full"><option value="">Tür Seç</option><option value="Kağıt">Kağıt</option><option value="Kimyasal">Kimyasal</option><option value="Boya">Boya</option><option value="Ambalaj">Ambalaj</option><option value="Baskı Malzemesi">Baskı Malzemesi</option><option value="Diğer">Diğer</option></select><Input p="Miktar" type="number" v={stockForm.quantity} c={(v: string) => setStockForm({ ...stockForm, quantity: v })} /><Input p="Birim" v={stockForm.unit} c={(v: string) => setStockForm({ ...stockForm, unit: v })} /><Input p="Minimum" type="number" v={stockForm.min_quantity} c={(v: string) => setStockForm({ ...stockForm, min_quantity: v })} /><button onClick={addStock} className="bg-blue-600 text-white px-5 py-3 rounded-lg font-bold">Stok Ekle</button></div></Panel><div className="md:col-span-2"><Panel><table className="w-full text-sm min-w-[650px]"><thead><tr className="border-b text-left text-slate-500"><th>Ad</th><th>Tür</th><th>Miktar</th><th>Min</th><th>İşlem</th></tr></thead><tbody>{stocks.map((s: Stock) => <tr key={s.id} className="border-b"><td className="py-3 font-bold">{s.name}</td><td>{s.type}</td><td className={Number(s.quantity) <= Number(s.min_quantity) ? "text-red-600 font-bold" : ""}>{s.quantity} {s.unit}</td><td>{s.min_quantity}</td><td className="space-x-2"><button onClick={() => moveStock(s, "Giriş")} className="bg-green-600 text-white px-3 py-2 rounded">Giriş</button><button onClick={() => moveStock(s, "Çıkış")} className="bg-red-600 text-white px-3 py-2 rounded">Çıkış</button></td></tr>)}</tbody></table></Panel></div></div> }
 function CostSettingsPanel({ settings, setSettings, save }: any) { if (!settings) return <Panel>Maliyet ayarları yükleniyor...</Panel>; const set = (key: string, value: string) => setSettings({ ...settings, [key]: Number(value || 0) }); return <Panel><h2 className="text-xl font-black mb-4">Maliyet Ayarları</h2><div className="grid grid-cols-4 gap-3"><Input p="Kağıt Birim Fiyat" type="number" v={settings.paper_kg_price} c={(v: string) => set("paper_kg_price", v)} /><Input p="Baskı Forma Fiyatı" type="number" v={settings.print_form_price} c={(v: string) => set("print_form_price", v)} /><Input p="Kırım / Katlama Forma" type="number" v={settings.folding_form_price} c={(v: string) => set("folding_form_price", v)} /><Input p="Kesim / Diğer" type="number" v={settings.cutting_price} c={(v: string) => set("cutting_price", v)} /><Input p="Amerikan Cilt / Adet" type="number" v={settings.american_binding_price} c={(v: string) => set("american_binding_price", v)} /><Input p="İplik Dikiş / Adet" type="number" v={settings.thread_binding_price} c={(v: string) => set("thread_binding_price", v)} /><Input p="Tel Dikiş / Adet" type="number" v={settings.staple_binding_price} c={(v: string) => set("staple_binding_price", v)} /><Input p="Spiral / Adet" type="number" v={settings.spiral_binding_price} c={(v: string) => set("spiral_binding_price", v)} /><Input p="Kapak Baskı" type="number" v={settings.cover_print_price} c={(v: string) => set("cover_print_price", v)} /><Input p="Laminasyon / Adet" type="number" v={settings.lamination_price} c={(v: string) => set("lamination_price", v)} /><Input p="Fire %" type="number" v={settings.waste_percent} c={(v: string) => set("waste_percent", v)} /><Input p="Kâr %" type="number" v={settings.profit_percent} c={(v: string) => set("profit_percent", v)} /><Input p="KDV %" type="number" v={settings.vat_percent} c={(v: string) => set("vat_percent", v)} /></div><button onClick={save} className="mt-5 bg-blue-600 text-white px-6 py-3 rounded-lg font-bold">Ayarları Kaydet</button><p className="text-sm text-slate-500 mt-4">Yeni İş Girişi ekranında “Maliyeti Hesapla” butonu bu ayarları kullanır.</p></Panel> }
-function StaffPanel({ profiles, updateStaffProfile, quickAddStaff }: any) {
+function StaffPanel({ profiles, updateStaffProfile, createPersonel }: any) {
+  const [form, setForm] = useState({
+    username: "",
+    password: "",
+    full_name: "",
+    department: "Baskı",
+    role: "staff" as Role,
+  })
+  const [saving, setSaving] = useState(false)
+
+  async function submitPersonel() {
+    if (!form.username.trim()) return alert("Kullanıcı adı gir.")
+    if (!form.password.trim()) return alert("Şifre gir.")
+    if (form.password.length < 4) return alert("Şifre en az 4 karakter olsun.")
+
+    setSaving(true)
+    try {
+      await createPersonel(form)
+      setForm({ username: "", password: "", full_name: "", department: "Baskı", role: "staff" })
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
-    <Panel>
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-5">
-        <div>
-          <h2 className="text-xl font-black">Personel Yönetimi</h2>
-          <p className="text-sm text-slate-500">Personel adı, bölüm, rol ve aktif/pasif durumunu buradan yönet.</p>
+    <div className="space-y-5">
+      <Panel>
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-5">
+          <div>
+            <h2 className="text-xl font-black">Yeni Personel Oluştur</h2>
+            <p className="text-sm text-slate-500">Personel kullanıcı adıyla giriş yapar. Örnek: hakan / şifre.</p>
+          </div>
         </div>
-        <button onClick={quickAddStaff} className="bg-blue-600 text-white px-4 py-3 rounded-lg font-bold">Yeni Personel Notu</button>
-      </div>
-      <table className="w-full text-sm min-w-[850px]">
-        <thead>
-          <tr className="border-b text-left text-slate-500">
-            <th className="py-2">Kullanıcı</th>
-            <th>Ad Soyad</th>
-            <th>Bölüm</th>
-            <th>Rol</th>
-            <th>Durum</th>
-            <th>İşlem</th>
-          </tr>
-        </thead>
-        <tbody>
-          {profiles.map((p: Profile) => (
-            <tr key={p.id} className="border-b align-top">
-              <td className="py-3 font-bold">{p.username || p.email?.split("@")[0]}</td>
-              <td><Input p="Ad Soyad" v={p.full_name} c={(v: string) => updateStaffProfile(p, { full_name: v })} /></td>
-              <td><Input p="Bölüm" v={p.department || ""} c={(v: string) => updateStaffProfile(p, { department: v })} /></td>
-              <td>
-                <select value={p.role || "staff"} onChange={(e) => updateStaffProfile(p, { role: e.target.value as Role })} className="border rounded-lg p-2 w-full">
-                  <option value="admin">Yönetici</option>
-                  <option value="staff">Personel</option>
-                </select>
-              </td>
-              <td className={p.active === false ? "text-red-600 font-black" : "text-green-700 font-black"}>{p.active === false ? "Pasif" : "Aktif"}</td>
-              <td>
-                <button onClick={() => updateStaffProfile(p, { active: p.active === false })} className={p.active === false ? "bg-green-600 text-white px-3 py-2 rounded" : "bg-red-600 text-white px-3 py-2 rounded"}>
-                  {p.active === false ? "Aktif Yap" : "Pasif Yap"}
-                </button>
-              </td>
+
+        <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
+          <Input p="Kullanıcı Adı" v={form.username} c={(v: string) => setForm({ ...form, username: v.toLowerCase().replace(/\s+/g, "") })} />
+          <Input p="Şifre" type="password" v={form.password} c={(v: string) => setForm({ ...form, password: v })} />
+          <Input p="Ad Soyad" v={form.full_name} c={(v: string) => setForm({ ...form, full_name: v })} />
+          <select value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })} className="border rounded-lg p-2 text-sm w-full">
+            <option value="Baskı">Baskı</option>
+            <option value="Kapak">Kapak</option>
+            <option value="Teslimat">Teslimat</option>
+            <option value="Mücellit">Mücellit</option>
+            <option value="Muhasebe">Muhasebe</option>
+            <option value="Depo">Depo</option>
+            <option value="Yönetim">Yönetim</option>
+            <option value="Personel">Personel</option>
+          </select>
+          <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value as Role })} className="border rounded-lg p-2 text-sm w-full">
+            <option value="staff">Personel</option>
+            <option value="admin">Yönetici</option>
+          </select>
+          <button onClick={submitPersonel} disabled={saving} className="bg-blue-600 disabled:bg-slate-400 text-white px-4 py-3 rounded-lg font-bold">
+            {saving ? "Ekleniyor..." : "Personel Oluştur"}
+          </button>
+        </div>
+
+        <div className="mt-4 text-sm text-slate-500">
+          Sistem arkada kullanıcıyı <b>kullaniciadi@balbasim.com</b> olarak açar. Personel girişte sadece kullanıcı adını yazar.
+        </div>
+      </Panel>
+
+      <Panel>
+        <div className="mb-5">
+          <h2 className="text-xl font-black">Personel Yönetimi</h2>
+          <p className="text-sm text-slate-500">Ad, bölüm, rol ve aktif/pasif durumunu buradan yönet.</p>
+        </div>
+
+        <table className="w-full text-sm min-w-[900px]">
+          <thead>
+            <tr className="border-b text-left text-slate-500">
+              <th className="py-2">Kullanıcı</th>
+              <th>Ad Soyad</th>
+              <th>Bölüm</th>
+              <th>Rol</th>
+              <th>Durum</th>
+              <th>İşlem</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
-      <div className="mt-4 text-sm text-slate-500">
-        Şifre oluşturma/değiştirme Supabase Authentication ekranından yapılır. Bu panel personelin isim, bölüm, rol ve aktiflik bilgisini yönetir.
-      </div>
-    </Panel>
+          </thead>
+          <tbody>
+            {profiles.map((p: Profile) => (
+              <tr key={p.id} className="border-b align-top">
+                <td className="py-3 font-bold">{p.username || p.email?.split("@")[0]}</td>
+                <td><Input p="Ad Soyad" v={p.full_name} c={(v: string) => updateStaffProfile(p, { full_name: v })} /></td>
+                <td><Input p="Bölüm" v={p.department || ""} c={(v: string) => updateStaffProfile(p, { department: v })} /></td>
+                <td>
+                  <select value={p.role || "staff"} onChange={(e) => updateStaffProfile(p, { role: e.target.value as Role })} className="border rounded-lg p-2 w-full">
+                    <option value="admin">Yönetici</option>
+                    <option value="staff">Personel</option>
+                  </select>
+                </td>
+                <td className={p.active === false ? "text-red-600 font-black" : "text-green-700 font-black"}>{p.active === false ? "Pasif" : "Aktif"}</td>
+                <td>
+                  <button onClick={() => updateStaffProfile(p, { active: p.active === false })} className={p.active === false ? "bg-green-600 text-white px-3 py-2 rounded" : "bg-red-600 text-white px-3 py-2 rounded"}>
+                    {p.active === false ? "Aktif Yap" : "Pasif Yap"}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Panel>
+    </div>
   )
 }
 
