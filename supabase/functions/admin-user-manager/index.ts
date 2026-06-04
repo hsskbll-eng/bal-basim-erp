@@ -18,12 +18,13 @@ serve(async (req) => {
       return new Response(JSON.stringify({ error: "Server ayarları eksik" }), { status: 500, headers })
     }
 
+    const admin = createClient(supabaseUrl, serviceKey)
+
     const authHeader = req.headers.get("Authorization")
     if (!authHeader) {
       return new Response(JSON.stringify({ error: "Yetkisiz giriş" }), { status: 401, headers })
     }
 
-    const admin = createClient(supabaseUrl, serviceKey)
     const token = authHeader.replace("Bearer ", "")
     const { data: userData, error: userError } = await admin.auth.getUser(token)
 
@@ -31,14 +32,14 @@ serve(async (req) => {
       return new Response(JSON.stringify({ error: "Geçersiz oturum" }), { status: 401, headers })
     }
 
-    const { data: profile, error: profileError } = await admin
+    const { data: adminProfile } = await admin
       .from("profiles")
-      .select("role, active")
+      .select("role")
       .eq("id", userData.user.id)
       .single()
 
-    if (profileError || profile?.role !== "admin" || profile?.active === false) {
-      return new Response(JSON.stringify({ error: "Sadece aktif admin personel oluşturabilir" }), { status: 403, headers })
+    if (adminProfile?.role !== "admin") {
+      return new Response(JSON.stringify({ error: "Sadece admin işlem yapabilir" }), { status: 403, headers })
     }
 
     const body = await req.json()
@@ -48,12 +49,8 @@ serve(async (req) => {
       return new Response(JSON.stringify({ error: "Kullanıcı adı ve şifre zorunlu" }), { status: 400, headers })
     }
 
-    if (String(password).length < 4) {
-      return new Response(JSON.stringify({ error: "Şifre en az 4 karakter olmalı" }), { status: 400, headers })
-    }
-
-    const cleanUsername = String(username).trim().toLowerCase().replace(/\s+/g, "")
-    const email = `${cleanUsername}@balbasim.com`
+    const cleanUsername = String(username).trim().toLowerCase()
+    const email = cleanUsername.includes("@") ? cleanUsername : `${cleanUsername}@balbasim.com`
 
     const { data, error } = await admin.auth.admin.createUser({
       email,
@@ -66,22 +63,23 @@ serve(async (req) => {
       return new Response(JSON.stringify({ error: error.message }), { status: 400, headers })
     }
 
-    const { error: upsertError } = await admin.from("profiles").upsert({
+    const { error: profileError } = await admin.from("profiles").upsert({
       id: data.user.id,
       email,
-      username: cleanUsername,
+      username: email.split("@")[0],
       full_name: full_name || cleanUsername,
       role: role || "staff",
       department: department || "Personel",
       active: true,
     })
 
-    if (upsertError) {
-      return new Response(JSON.stringify({ error: upsertError.message }), { status: 400, headers })
+    if (profileError) {
+      return new Response(JSON.stringify({ error: profileError.message }), { status: 400, headers })
     }
 
-    return new Response(JSON.stringify({ ok: true, user: { id: data.user.id, email } }), { headers })
+    return new Response(JSON.stringify({ ok: true, user: data.user }), { headers })
   } catch (e) {
-    return new Response(JSON.stringify({ error: String(e?.message || e) }), { status: 500, headers })
+    const message = e instanceof Error ? e.message : String(e)
+    return new Response(JSON.stringify({ error: message }), { status: 500, headers })
   }
 })
