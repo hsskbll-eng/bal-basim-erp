@@ -48,6 +48,13 @@ type Job = {
  quantity: number
  delivered: number
  price: number
+ price_ex_vat?: number | null
+ vat_rate?: number | null
+ withholding_rate?: string | null
+ vat_amount?: number | null
+ withholding_amount?: number | null
+ vat_collectible?: number | null
+ price_inc_vat?: number | null
  paper_cost: number
  print_cost: number
  binding_cost: number
