@@ -1064,14 +1064,6 @@ function JobForm({ customers, jobForm, setJobForm, addJob }: any) {
         <RadioGroup label="Öncelik" value={jobForm.priority} options={[{ label: "Normal", value: "normal" }, { label: "Acil", value: "urgent" }]} onChange={(v: string) => setJobForm({ ...jobForm, priority: v })} />
       </Section>
 
-      <Section title="Maliyet Bilgileri">
-        <MoneyField label="Kağıt Maliyeti" value={jobForm.paper_cost} onChange={(v: string) => setJobForm({ ...jobForm, paper_cost: v })} />
-        <MoneyField label="Baskı Maliyeti" value={jobForm.print_cost} onChange={(v: string) => setJobForm({ ...jobForm, print_cost: v })} />
-        <MoneyField label="Cilt Maliyeti" value={jobForm.binding_cost} onChange={(v: string) => setJobForm({ ...jobForm, binding_cost: v })} />
-        <MoneyField label="Laminasyon Maliyeti" value={jobForm.lamination_cost} onChange={(v: string) => setJobForm({ ...jobForm, lamination_cost: v })} />
-        <MoneyField label="İşçilik" value={jobForm.labor_cost} onChange={(v: string) => setJobForm({ ...jobForm, labor_cost: v })} />
-      </Section>
-
       <Section title="Baskı Bilgileri">
         <NumberField label="Shrink Adedi" value={jobForm.shrink_amount} suffix="adet" onChange={(v: string) => setJobForm({ ...jobForm, shrink_amount: v })} />
         <Input p="Ebat" v={jobForm.size} list="paper-sizes" c={(v: string) => setJobForm({ ...jobForm, size: v })} />
