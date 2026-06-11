@@ -19,7 +19,7 @@ type Log = { id?: number; job_id: number; text: string; created_at: string; user
 type Delivery = { id: number; job_id: number; amount: number; note: string | null; created_at: string }
 type Stock = { id: number; name: string | null; type: string | null; quantity: number; unit: string | null; min_quantity: number; created_at?: string }
 type JobStock = { id: number; job_id: number; stock_name: string | null; stock_type: string | null; quantity: number; expected_quantity?: number | null; received_quantity?: number | null; unit: string | null; note: string | null; used: boolean; stock_status?: string | null; created_at?: string }
-type FinanceRecord = { id: number; record_type: string | null; title: string | null; person_company: string | null; amount: number; due_date: string | null; paid: boolean; note: string | null; category?: string | null; vat_amount?: number | null; month?: string | null; created_at?: string }
+type FinanceRecord = { id: number; job_id?: number | null; record_type: string | null; title: string | null; person_company: string | null; amount: number; due_date: string | null; paid: boolean; note: string | null; category?: string | null; vat_amount?: number | null; month?: string | null; created_at?: string }
 type FixedExpense = { id: number; title: string | null; category: string | null; amount: number; day_of_month: number | null; active: boolean; note: string | null; created_at?: string }
 type CheckNote = { id: number; record_type: string | null; person_company: string | null; amount: number; due_date: string | null; status: string | null; note: string | null; created_at?: string }
 
@@ -158,6 +158,15 @@ function parseWithholdingRate(value: any) {
  const [a, b] = v.split("/").map(Number)
  if (!a || !b) return 0
  return a / b
+}
+
+
+function formatNumber(value: number | string | null | undefined) {
+ return new Intl.NumberFormat("tr-TR").format(Number(value || 0))
+}
+
+function formatMoney(value: number | string | null | undefined) {
+ return new Intl.NumberFormat("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(value || 0))
 }
 
 function calcVatTotals(priceExVatRaw: any, vatRateRaw: any, withholdingRaw: any) {
@@ -403,6 +412,46 @@ async function login() {
   return { total_cost, profit }
  }
 
+
+ async function upsertJobFinanceRecord(job: any) {
+  const jobId = Number(job.id || 0)
+  if (!jobId) return
+
+  const amount = Number(job.price_ex_vat ?? job.price ?? 0)
+  const vatAmount = Number(job.vat_amount || 0)
+  const dueDate = String(job.deadline || job.created_at || new Date().toISOString()).slice(0, 10)
+
+  const payload = {
+   job_id: jobId,
+   record_type: "Gelir",
+   title: `İş Geliri - ${jobNo(job)} / ${job.job_name || "İş"}`,
+   person_company: job.customer_name || "",
+   amount,
+   due_date: dueDate,
+   paid: false,
+   category: "İş Geliri",
+   vat_amount: vatAmount,
+   month: dueDate.slice(0, 7),
+   note: "İş girişinden otomatik oluşturuldu",
+  }
+
+  const { data: existing } = await supabase
+   .from("finance_records")
+   .select("id")
+   .eq("job_id", jobId)
+   .maybeSingle()
+
+  const result = existing?.id
+   ? await supabase.from("finance_records").update(payload).eq("id", existing.id)
+   : await supabase.from("finance_records").insert(payload)
+
+  if (result.error) console.error("Finans kaydı oluşturulamadı:", result.error.message)
+ }
+
+ async function deleteJobFinanceRecord(jobId: number) {
+  await supabase.from("finance_records").delete().eq("job_id", jobId)
+ }
+
  async function addJob() {
   const customer = customers.find((c) => c.id === Number(jobForm.customer_id))
   if (!customer || !jobForm.job_name) return alert("Müşteri ve iş adı zorunlu.")
@@ -459,6 +508,7 @@ async function login() {
   const { data, error } = await supabase.from("jobs").insert(payload).select().single()
   if (error) return alert(error.message)
   await addLog(data.id, "İş oluşturuldu.", "olusturma")
+  await upsertJobFinanceRecord({ ...payload, id: data.id, created_at: data.created_at })
 
   const jobStocksToInsert: any[] = []
 
@@ -505,11 +555,34 @@ async function login() {
 
  async function saveEditJob() {
   if (!editJob) return
+
+  const vat = calcVatTotals(
+   editJob.price_ex_vat ?? editJob.price ?? 0,
+   editJob.vat_rate ?? 20,
+   editJob.withholding_rate ?? "Yok"
+  )
+
   const total_cost = Number(editJob.paper_cost || 0) + Number(editJob.print_cost || 0) + Number(editJob.binding_cost || 0) + Number(editJob.lamination_cost || 0) + Number(editJob.labor_cost || 0)
-  const profit = Number(editJob.price || 0) - total_cost
+  const profit = vat.priceExVat - total_cost
   const { logs, deliveries, ...clean } = editJob
-  const { error } = await supabase.from("jobs").update({ ...clean, total_cost, profit }).eq("id", editJob.id)
+  const updatedJob = {
+   ...clean,
+   price: vat.priceExVat,
+   price_ex_vat: vat.priceExVat,
+   vat_rate: vat.vatRate,
+   withholding_rate: vat.withholdingRate,
+   vat_amount: vat.vatAmount,
+   withholding_amount: vat.withholdingAmount,
+   vat_collectible: vat.vatCollectible,
+   price_inc_vat: vat.priceIncVat,
+   total_cost,
+   profit,
+  }
+
+  const { data, error } = await supabase.from("jobs").update(updatedJob).eq("id", editJob.id).select().single()
   if (error) return alert(error.message)
+
+  await upsertJobFinanceRecord(data || updatedJob)
   await addLog(editJob.id, "İş bilgileri düzenlendi.", "duzenleme")
   setEditJob(null)
   await loadAll()
@@ -548,6 +621,7 @@ async function login() {
 
  async function deleteArchivedJob(job: Job) {
   if (!confirm(`${jobNo(job)} numaralı işi tamamen silmek istiyor musun?`)) return
+  await deleteJobFinanceRecord(job.id)
   await supabase.from("deliveries").delete().eq("job_id", job.id)
   await supabase.from("logs").delete().eq("job_id", job.id)
   await supabase.from("jobs").delete().eq("id", job.id)
@@ -1049,7 +1123,7 @@ function RadioGroup({ label, value, options, onChange }: any) { return <div><lab
 function Stat({ title, value, valueText }: any) { return <div className="bg-white border rounded-xl p-5"><div className="text-sm text-slate-500 font-bold">{title}</div><div className="text-2xl font-black mt-2">{valueText || value}</div></div> }
 function Alerts({ alerts }: any) { if (!alerts.length) return null; return <div className="bg-white border rounded-xl p-5 mb-6"><h2 className="font-black text-lg mb-3">🔔 Canlı Bildirimler</h2><div className="grid grid-cols-3 gap-3">{alerts.map((a: any) => <div key={a.id} className={`rounded-lg p-3 font-bold ${a.color}`}><div>{a.title}</div><div className="text-sm opacity-80">{a.text}</div></div>)}</div></div> }
 function VatPreview({ price, vatRate, withholding }: any) { const v = calcVatTotals(price, vatRate, withholding); return <div className="border rounded-lg p-2 text-xs bg-slate-50"><b>KDV:</b> {v.vatAmount.toLocaleString("tr-TR")} ₺<br/><b>Tevkifat:</b> {v.withholdingAmount.toLocaleString("tr-TR")} ₺<br/><b>KDV Dahil:</b> {v.priceIncVat.toLocaleString("tr-TR")} ₺</div> }
-function JobForm({ customers, jobForm, setJobForm, addJob, calculateJobCosts }: any) { return <div className="space-y-5"><Section title="Genel İş Bilgileri"><select className="border rounded-lg p-2 text-sm" value={jobForm.customer_id} onChange={(e) => setJobForm({ ...jobForm, customer_id: Number(e.target.value) })}>{customers.map((c: Customer) => <option key={c.id} value={c.id}>{c.company}</option>)}</select><Input p="İş Adı" v={jobForm.job_name} c={(v: string) => setJobForm({ ...jobForm, job_name: v })} /><Input p="Adet" type="number" v={jobForm.quantity} c={(v: string) => setJobForm({ ...jobForm, quantity: v })} /><Input p="Fiyat (KDV Hariç)" type="number" v={jobForm.price} c={(v: string) => setJobForm({ ...jobForm, price: v })} /><select className="border rounded-lg p-2 text-sm" value={jobForm.vat_rate} onChange={(e) => setJobForm({ ...jobForm, vat_rate: e.target.value })}><option value="0">KDV %0</option><option value="1">KDV %1</option><option value="10">KDV %10</option><option value="20">KDV %20</option></select><select className="border rounded-lg p-2 text-sm" value={jobForm.withholding_rate} onChange={(e) => setJobForm({ ...jobForm, withholding_rate: e.target.value })}><option value="Yok">Tevkifat Yok</option><option value="2/10">2/10</option><option value="3/10">3/10</option><option value="5/10">5/10</option><option value="7/10">7/10</option><option value="9/10">9/10</option></select><VatPreview price={jobForm.price} vatRate={jobForm.vat_rate} withholding={jobForm.withholding_rate} /><Input p="Teslim Tarihi" type="date" v={jobForm.deadline} c={(v: string) => setJobForm({ ...jobForm, deadline: v })} /><RadioGroup label="Öncelik" value={jobForm.priority} options={[{ label: "Normal", value: "normal" }, { label: "Acil", value: "urgent" }]} onChange={(v: string) => setJobForm({ ...jobForm, priority: v })} /></Section><Section title="Maliyet Bilgileri"><Input p="Kağıt Maliyeti" type="number" v={jobForm.paper_cost} c={(v: string) => setJobForm({ ...jobForm, paper_cost: v })} /><Input p="Baskı Maliyeti" type="number" v={jobForm.print_cost} c={(v: string) => setJobForm({ ...jobForm, print_cost: v })} /><Input p="Cilt Maliyeti" type="number" v={jobForm.binding_cost} c={(v: string) => setJobForm({ ...jobForm, binding_cost: v })} /><Input p="Laminasyon Maliyeti" type="number" v={jobForm.lamination_cost} c={(v: string) => setJobForm({ ...jobForm, lamination_cost: v })} /><Input p="İşçilik" type="number" v={jobForm.labor_cost} c={(v: string) => setJobForm({ ...jobForm, labor_cost: v })} /></Section><Section title="Baskı Bilgileri"><Input p="Shrink Adedi" v={jobForm.shrink_amount} c={(v: string) => setJobForm({ ...jobForm, shrink_amount: v })} /><Input p="Ebat" v={jobForm.size} list="paper-sizes" c={(v: string) => setJobForm({ ...jobForm, size: v })} /><Input p="Sayfa Sayısı" v={jobForm.page_count} c={(v: string) => setJobForm({ ...jobForm, page_count: v })} /><Input p="Renk" v={jobForm.color} list="print-types" c={(v: string) => setJobForm({ ...jobForm, color: v })} /><Input p="Baskı Tipi" v={jobForm.print_type} list="print-types" c={(v: string) => setJobForm({ ...jobForm, print_type: v })} /><Input p="Cilt Şekli" v={jobForm.binding} list="bindings" c={(v: string) => setJobForm({ ...jobForm, binding: v })} /><RadioGroup label="Laminasyon" value={jobForm.lamination} options={[{ label: "Yok", value: "Yok" }, { label: "Var", value: "Var" }]} onChange={(v: string) => setJobForm({ ...jobForm, lamination: v })} /><RadioGroup label="Selefon" value={jobForm.cellophane} options={[{ label: "Yok", value: "Yok" }, { label: "Mat", value: "Mat" }, { label: "Parlak", value: "Parlak" }]} onChange={(v: string) => setJobForm({ ...jobForm, cellophane: v })} /></Section><Section title="İç Kağıt Bilgileri"><Input p="Gramaj" v={jobForm.inner_paper_gram} list="grams" c={(v: string) => setJobForm({ ...jobForm, inner_paper_gram: v })} /><Input p="Türü" v={jobForm.inner_paper_type} list="paper-types" c={(v: string) => setJobForm({ ...jobForm, inner_paper_type: v })} /><Input p="Ebatı" v={jobForm.inner_paper_size} list="paper-sizes" c={(v: string) => setJobForm({ ...jobForm, inner_paper_size: v })} /><Input p="Miktarı" v={jobForm.inner_paper_amount} c={(v: string) => setJobForm({ ...jobForm, inner_paper_amount: v })} /></Section><Section title="Kapak Kağıdı Bilgileri"><Input p="Gramaj" v={jobForm.cover_gram} list="grams" c={(v: string) => setJobForm({ ...jobForm, cover_gram: v })} /><Input p="Türü" v={jobForm.cover_type} list="paper-types" c={(v: string) => setJobForm({ ...jobForm, cover_type: v })} /><Input p="Kağıt Türü" v={jobForm.cover_paper_type} list="paper-types" c={(v: string) => setJobForm({ ...jobForm, cover_paper_type: v })} /><Input p="Ebat" v={jobForm.cover_size} list="paper-sizes" c={(v: string) => setJobForm({ ...jobForm, cover_size: v })} /><Input p="Miktar" v={jobForm.cover_amount} c={(v: string) => setJobForm({ ...jobForm, cover_amount: v })} /><RadioGroup label="Kapak İçi Baskı" value={jobForm.cover_inside_print} options={[{ label: "Yok", value: "Yok" }, { label: "Var", value: "Var" }]} onChange={(v: string) => setJobForm({ ...jobForm, cover_inside_print: v })} /></Section><textarea className="border rounded-lg p-3 w-full" placeholder="Not" value={jobForm.note} onChange={(e) => setJobForm({ ...jobForm, note: e.target.value })} /><div className="flex gap-3"><button onClick={calculateJobCosts} className="bg-slate-900 text-white px-6 py-3 rounded-lg font-bold">Maliyeti Hesapla</button><button onClick={addJob} className="bg-blue-600 text-white px-6 py-3 rounded-lg font-bold">İşi Kaydet</button></div></div> }
+function JobForm({ customers, jobForm, setJobForm, addJob, calculateJobCosts }: any) { return <div className="space-y-5"><Section title="Genel İş Bilgileri"><select className="border rounded-lg p-2 text-sm" value={jobForm.customer_id} onChange={(e) => setJobForm({ ...jobForm, customer_id: Number(e.target.value) })}>{customers.map((c: Customer) => <option key={c.id} value={c.id}>{c.company}</option>)}</select><Input p="İş Adı" v={jobForm.job_name} c={(v: string) => setJobForm({ ...jobForm, job_name: v })} /><Input p="Adet" type="number" v={jobForm.quantity} c={(v: string) => setJobForm({ ...jobForm, quantity: v })} /><Input p="Fiyat (KDV Hariç)" type="number" v={jobForm.price} c={(v: string) => setJobForm({ ...jobForm, price: v })} /><select className="border rounded-lg p-2 text-sm" value={jobForm.vat_rate} onChange={(e) => setJobForm({ ...jobForm, vat_rate: e.target.value })}><option value="0">KDV %0</option><option value="1">KDV %1</option><option value="10">KDV %10</option><option value="20">KDV %20</option></select><select className="border rounded-lg p-2 text-sm" value={jobForm.withholding_rate} onChange={(e) => setJobForm({ ...jobForm, withholding_rate: e.target.value })}><option value="Yok">Tevkifat Yok</option><option value="2/10">2/10</option><option value="3/10">3/10</option><option value="5/10">5/10</option><option value="7/10">7/10</option><option value="9/10">9/10</option></select><VatPreview price={jobForm.price} vatRate={jobForm.vat_rate} withholding={jobForm.withholding_rate} /><Input p="Teslim Tarihi" type="date" v={jobForm.deadline} c={(v: string) => setJobForm({ ...jobForm, deadline: v })} /><RadioGroup label="Öncelik" value={jobForm.priority} options={[{ label: "Normal", value: "normal" }, { label: "Acil", value: "urgent" }]} onChange={(v: string) => setJobForm({ ...jobForm, priority: v })} /></Section><Section title="Baskı Bilgileri"><Input p="Shrink Adedi" v={jobForm.shrink_amount} c={(v: string) => setJobForm({ ...jobForm, shrink_amount: v })} /><Input p="Ebat" v={jobForm.size} list="paper-sizes" c={(v: string) => setJobForm({ ...jobForm, size: v })} /><Input p="Sayfa Sayısı" v={jobForm.page_count} c={(v: string) => setJobForm({ ...jobForm, page_count: v })} /><Input p="Renk" v={jobForm.color} list="print-types" c={(v: string) => setJobForm({ ...jobForm, color: v })} /><Input p="Baskı Tipi" v={jobForm.print_type} list="print-types" c={(v: string) => setJobForm({ ...jobForm, print_type: v })} /><Input p="Cilt Şekli" v={jobForm.binding} list="bindings" c={(v: string) => setJobForm({ ...jobForm, binding: v })} /><RadioGroup label="Laminasyon" value={jobForm.lamination} options={[{ label: "Yok", value: "Yok" }, { label: "Var", value: "Var" }]} onChange={(v: string) => setJobForm({ ...jobForm, lamination: v })} /><RadioGroup label="Selefon" value={jobForm.cellophane} options={[{ label: "Yok", value: "Yok" }, { label: "Mat", value: "Mat" }, { label: "Parlak", value: "Parlak" }]} onChange={(v: string) => setJobForm({ ...jobForm, cellophane: v })} /></Section><Section title="İç Kağıt Bilgileri"><Input p="Gramaj" v={jobForm.inner_paper_gram} list="grams" c={(v: string) => setJobForm({ ...jobForm, inner_paper_gram: v })} /><Input p="Türü" v={jobForm.inner_paper_type} list="paper-types" c={(v: string) => setJobForm({ ...jobForm, inner_paper_type: v })} /><Input p="Ebatı" v={jobForm.inner_paper_size} list="paper-sizes" c={(v: string) => setJobForm({ ...jobForm, inner_paper_size: v })} /><Input p="Miktarı" v={jobForm.inner_paper_amount} c={(v: string) => setJobForm({ ...jobForm, inner_paper_amount: v })} /></Section><Section title="Kapak Kağıdı Bilgileri"><Input p="Gramaj" v={jobForm.cover_gram} list="grams" c={(v: string) => setJobForm({ ...jobForm, cover_gram: v })} /><Input p="Türü" v={jobForm.cover_type} list="paper-types" c={(v: string) => setJobForm({ ...jobForm, cover_type: v })} /><Input p="Kağıt Türü" v={jobForm.cover_paper_type} list="paper-types" c={(v: string) => setJobForm({ ...jobForm, cover_paper_type: v })} /><Input p="Ebat" v={jobForm.cover_size} list="paper-sizes" c={(v: string) => setJobForm({ ...jobForm, cover_size: v })} /><Input p="Miktar" v={jobForm.cover_amount} c={(v: string) => setJobForm({ ...jobForm, cover_amount: v })} /><RadioGroup label="Kapak İçi Baskı" value={jobForm.cover_inside_print} options={[{ label: "Yok", value: "Yok" }, { label: "Var", value: "Var" }]} onChange={(v: string) => setJobForm({ ...jobForm, cover_inside_print: v })} /></Section><textarea className="border rounded-lg p-3 w-full" placeholder="Not" value={jobForm.note} onChange={(e) => setJobForm({ ...jobForm, note: e.target.value })} /><div className="flex gap-3"><button onClick={addJob} className="bg-blue-600 text-white px-6 py-3 rounded-lg font-bold">İşi Kaydet</button></div></div> }
 function Customers({ customers, customerForm, setCustomerForm, addCustomer, jobs, loadAll }: any) { return <div className="grid grid-cols-1 md:grid-cols-3 gap-5"><Panel><h2 className="font-black text-xl mb-4">Müşteri Kayıt</h2><div className="space-y-3"><Input p="Firma" v={customerForm.company} c={(v: string) => setCustomerForm({ ...customerForm, company: v })} /><Input p="Yetkili" v={customerForm.person} c={(v: string) => setCustomerForm({ ...customerForm, person: v })} /><Input p="Telefon" v={customerForm.phone} c={(v: string) => setCustomerForm({ ...customerForm, phone: v })} /><Input p="E-posta" v={customerForm.email} c={(v: string) => setCustomerForm({ ...customerForm, email: v })} /><Input p="Adres" v={customerForm.address} c={(v: string) => setCustomerForm({ ...customerForm, address: v })} /><Input p="Not" v={customerForm.note} c={(v: string) => setCustomerForm({ ...customerForm, note: v })} /><button onClick={addCustomer} className="bg-blue-600 text-white px-5 py-3 rounded-lg font-bold">Müşteri Ekle</button></div></Panel><div className="md:col-span-2"><Panel><table className="w-full text-sm min-w-[700px]"><thead><tr className="border-b text-left text-slate-500"><th className="py-2">Firma</th><th>Yetkili</th><th>Telefon</th><th>Adres</th><th>İşlem</th></tr></thead><tbody>{customers.map((c: Customer) => <tr key={c.id} className="border-b"><td className="py-3 font-bold">{c.company}</td><td>{c.person}</td><td>{c.phone}</td><td>{c.address}</td><td><button onClick={async () => { const hasJobs = jobs.some((j: Job) => j.customer_id === c.id); if (hasJobs) return alert("Bu müşteriye ait işler var. Önce o işleri silmelisin."); if (!confirm(`${c.company} müşterisini silmek istiyor musun?`)) return; await supabase.from("customers").delete().eq("id", c.id); await loadAll() }} className="bg-red-600 text-white px-3 py-2 rounded">Sil</button></td></tr>)}</tbody></table></Panel></div></div> }
 function Column({ status, jobs, isAdmin, nextJob, prevJob, archiveJob, copyJob, setEditJob, makeJobPdf, makeDeliveryPdf, jobStocks, addJobStock }: any) { return <div className="bg-white border border-t-4 border-t-blue-600 rounded-xl p-3 min-h-[560px]"><div className="flex justify-between mb-3"><h3 className="font-black text-sm">{statusTitle[status as Status]}</h3><span>{jobs.length}</span></div><div className="space-y-3">{jobs.map((job: Job) => <div key={job.id} className={`border rounded-lg p-3 shadow-sm ${job.priority === "urgent" ? "bg-red-50 border-red-300" : "bg-white"}`}><button onClick={() => makeJobPdf(job)} className="text-xs text-blue-600 font-bold hover:underline">{jobNo(job)}</button><div className="font-black mt-2">{job.customer_name}</div><div className="text-sm">{job.job_name}</div><div className="text-sm mt-2">Adet: {job.quantity}</div><div className="text-sm">Teslim: {job.delivered}</div><div className="text-sm">Kalan: {Math.max(Number(job.quantity || 0) - Number(job.delivered || 0), 0)}</div>{job.priority === "urgent" && <div className="text-red-600 text-xs font-black">ACİL</div>}{isAdmin && <div className="text-sm font-bold">Kâr: {Number(job.profit || 0).toLocaleString("tr-TR")} ₺</div>}{isAdmin && <div className="mt-2 bg-slate-50 border rounded-lg p-2 text-xs"><div className="font-black mb-1">İşe Bağlı Stok</div>{(jobStocks || []).filter((s: JobStock) => s.job_id === job.id).length === 0 && <div className="text-slate-500">Stok yok</div>}{(jobStocks || []).filter((s: JobStock) => s.job_id === job.id).map((s: JobStock) => <div key={s.id} className={s.used ? "line-through text-slate-400" : "text-slate-700"}>{s.stock_name} - {s.quantity} {s.unit} {s.used ? "✓" : ""}</div>)}<button onClick={() => addJobStock(job)} className="mt-2 w-full bg-slate-900 text-white py-2 rounded text-xs font-bold">İşe Stok Ekle</button></div>}<div className="grid grid-cols-2 gap-2 mt-3">{status !== "printing" && <button onClick={() => prevJob(job)} className="bg-slate-200 py-2 rounded text-xs font-bold">← Geri</button>}{status !== "finished" && <button onClick={() => nextJob(job)} className="bg-blue-600 text-white py-2 rounded text-xs font-bold">İleri →</button>}</div>{Number(job.delivered || 0) > 0 && <button onClick={() => makeDeliveryPdf(job)} className="w-full mt-2 bg-green-600 text-white py-2 rounded text-xs font-bold">Teslim Fişi</button>}{isAdmin && <><button onClick={() => setEditJob(job)} className="w-full mt-2 bg-yellow-100 text-yellow-800 py-2 rounded text-xs font-bold">Düzenle</button><button onClick={() => copyJob(job)} className="w-full mt-2 bg-slate-900 text-white py-2 rounded text-xs font-bold">Kopyala</button><button onClick={() => archiveJob(job)} className="w-full mt-2 bg-red-100 text-red-700 py-2 rounded text-xs font-bold">Arşive Taşı</button></>}<details className="mt-2 text-xs"><summary className="cursor-pointer font-bold">Geçmiş</summary>{(job.logs || []).map((l, i) => <div key={i} className="border-t py-1"><b>{l.user_name || "Sistem"}</b>{l.user_department ? ` (${l.user_department})` : ""}<br />{new Date(l.created_at).toLocaleString("tr-TR")} - {l.text}</div>)}</details></div>)}</div></div> }
 function JobsTable({ jobs, isAdmin, makeJobPdf, showCosts }: any) { return <table className="w-full text-sm"><thead><tr className="border-b text-left text-slate-500"><th className="py-2">İş No</th><th>Müşteri</th><th>İş</th><th>Adet</th><th>Teslim</th>{isAdmin && <><th>KDV Hariç</th><th>KDV</th><th>Tevkifat</th><th>KDV Dahil</th></>}{showCosts && <><th>Maliyet</th><th>Kâr</th></>}<th>Durum</th>{isAdmin && <th>Fatura</th>}</tr></thead><tbody>{jobs.map((j: Job) => <tr key={j.id} className="border-b"><td className="py-3 font-bold"><button onClick={() => makeJobPdf(j)} className="text-blue-600 hover:underline">{jobNo(j)}</button></td><td>{j.customer_name}</td><td>{j.job_name}</td><td>{j.quantity}</td><td>{j.delivered}</td>{isAdmin && <><td>{Number(j.price_ex_vat ?? j.price ?? 0).toLocaleString("tr-TR")} ₺</td><td>{Number(j.vat_amount || 0).toLocaleString("tr-TR")} ₺</td><td>{Number(j.withholding_amount || 0).toLocaleString("tr-TR")} ₺</td><td>{Number(j.price_inc_vat ?? j.price ?? 0).toLocaleString("tr-TR")} ₺</td></>}{showCosts && <><td>{Number(j.total_cost || 0).toLocaleString("tr-TR")} ₺</td><td>{Number(j.profit || 0).toLocaleString("tr-TR")} ₺</td></>}<td>{statusTitle[j.status]}</td>{isAdmin && <td>{invoiceTitle[j.invoice_status]}</td>}</tr>)}</tbody></table> }
@@ -1167,8 +1241,8 @@ function CostSettingsPanel({ settings, setSettings, save }: any) { if (!settings
 
 function FinancePanel({ jobs, records, fixedExpenses, checksNotes, financeForm, setFinanceForm, addFinanceRecord, toggleFinancePaid, fixedExpenseForm, setFixedExpenseForm, addFixedExpense, toggleFixedExpense, checkNoteForm, setCheckNoteForm, addCheckNote, updateCheckStatus, monthFilter, setMonthFilter }: any) {
  const monthRecords = records.filter((r: FinanceRecord) => (r.month || r.due_date?.slice(0, 7)) === monthFilter)
- const income = monthRecords.filter((r: FinanceRecord) => ["Gelir", "Alacak"].includes(String(r.record_type))).reduce((s: number, r: FinanceRecord) => s + Number(r.amount || 0), 0)
- const expense = monthRecords.filter((r: FinanceRecord) => ["Gider", "Borç"].includes(String(r.record_type))).reduce((s: number, r: FinanceRecord) => s + Number(r.amount || 0), 0)
+ const income = monthRecords.filter((r: FinanceRecord) => String(r.record_type) === "Gelir").reduce((s: number, r: FinanceRecord) => s + Number(r.amount || 0), 0)
+ const expense = monthRecords.filter((r: FinanceRecord) => String(r.record_type) === "Gider").reduce((s: number, r: FinanceRecord) => s + Number(r.amount || 0), 0)
  const jobMonth = (jobs || []).filter((j: Job) => (j.created_at || "").slice(0, 7) === monthFilter)
  const jobSalesVat = jobMonth.reduce((s: number, j: Job) => s + Number(j.vat_amount || 0), 0)
  const jobWithholdingVat = jobMonth.reduce((s: number, j: Job) => s + Number(j.withholding_amount || 0), 0)
@@ -1232,18 +1306,6 @@ function FinancePanel({ jobs, records, fixedExpenses, checksNotes, financeForm, 
     </Panel>
 
     <Panel>
-     <h3 className="font-black mb-3">Sabit Gider</h3>
-     <div className="space-y-3">
-      <Input p="Gider adı" v={fixedExpenseForm.title} c={(v: string) => setFixedExpenseForm({ ...fixedExpenseForm, title: v })} />
-      <Input p="Kategori" v={fixedExpenseForm.category} c={(v: string) => setFixedExpenseForm({ ...fixedExpenseForm, category: v })} />
-      <Input p="Tutar" type="number" v={fixedExpenseForm.amount} c={(v: string) => setFixedExpenseForm({ ...fixedExpenseForm, amount: v })} />
-      <Input p="Ayın günü" type="number" v={fixedExpenseForm.day_of_month} c={(v: string) => setFixedExpenseForm({ ...fixedExpenseForm, day_of_month: v })} />
-      <Input p="Not" v={fixedExpenseForm.note} c={(v: string) => setFixedExpenseForm({ ...fixedExpenseForm, note: v })} />
-      <button onClick={addFixedExpense} className="bg-slate-900 text-white px-4 py-3 rounded-lg font-bold w-full">Sabit Gider Ekle</button>
-     </div>
-    </Panel>
-
-    <Panel>
      <h3 className="font-black mb-3">Çek / Senet / Vadeli Tahsilat</h3>
      <div className="space-y-3">
       <select value={checkNoteForm.record_type} onChange={(e) => setCheckNoteForm({ ...checkNoteForm, record_type: e.target.value })} className="border rounded-lg p-2 w-full"><option>Çek</option><option>Senet</option><option>Vadeli Tahsilat</option></select>
@@ -1262,10 +1324,6 @@ function FinancePanel({ jobs, records, fixedExpenses, checksNotes, financeForm, 
    </Panel>
 
    <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
-    <Panel>
-     <h3 className="font-black mb-3">Sabit Giderler</h3>
-     <table className="w-full text-sm min-w-[600px]"><thead><tr className="border-b text-left text-slate-500"><th>Ad</th><th>Kategori</th><th>Tutar</th><th>Gün</th><th>Durum</th><th>İşlem</th></tr></thead><tbody>{fixedExpenses.map((f: FixedExpense) => <tr key={f.id} className="border-b"><td className="py-3 font-bold">{f.title}</td><td>{f.category}</td><td>{Number(f.amount || 0).toLocaleString("tr-TR")} ₺</td><td>{f.day_of_month}</td><td>{f.active ? "Aktif" : "Pasif"}</td><td><button onClick={() => toggleFixedExpense(f)} className="bg-slate-700 text-white px-3 py-2 rounded">{f.active ? "Pasif" : "Aktif"}</button></td></tr>)}</tbody></table>
-    </Panel>
     <Panel>
      <h3 className="font-black mb-3">Çek / Senet / Vadeli Tahsilat</h3>
      <table className="w-full text-sm min-w-[650px]"><thead><tr className="border-b text-left text-slate-500"><th>Vade</th><th>Tür</th><th>Firma</th><th>Tutar</th><th>Durum</th><th>İşlem</th></tr></thead><tbody>{checksNotes.map((c: CheckNote) => <tr key={c.id} className="border-b"><td className="py-3">{c.due_date}</td><td>{c.record_type}</td><td className="font-bold">{c.person_company}</td><td>{Number(c.amount || 0).toLocaleString("tr-TR")} ₺</td><td>{c.status}</td><td className="space-x-2"><button onClick={() => updateCheckStatus(c, "Bekliyor")} className="bg-slate-200 px-2 py-1 rounded">Bekliyor</button><button onClick={() => updateCheckStatus(c, "Tamamlandı")} className="bg-green-600 text-white px-2 py-1 rounded">Tamam</button></td></tr>)}</tbody></table>
@@ -1436,5 +1494,5 @@ function StaffPanel({ profiles, updateStaffProfile, quickAddStaff, createPersone
 
 function Deliveries({ jobs }: any) { const rows = jobs.flatMap((j: Job) => (j.deliveries || []).map((d) => [jobNo(j), j.customer_name, j.job_name, String(d.amount), d.note, new Date(d.created_at).toLocaleString("tr-TR")])); return <SimpleTable head={["İş No", "Müşteri", "İş", "Adet", "Not", "Tarih"]} rows={rows} /> }
 function DeliveryModal({ job, form, setForm, close, save }: any) { const remaining = Math.max(Number(job.quantity || 0) - Number(job.delivered || 0), 0); const after = Math.max(remaining - Number(form.amount || 0), 0); return <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"><div className="bg-white rounded-2xl w-[520px] shadow-2xl overflow-hidden"><div className="bg-[#071d35] text-white p-5"><h2 className="text-2xl font-black">Teslimat Girişi</h2><div className="text-sm opacity-80">{job.customer_name} - {job.job_name}</div></div><div className="p-6 space-y-4"><div className="grid grid-cols-3 gap-3"><div className="bg-slate-100 rounded-xl p-4"><div className="text-xs text-slate-500 font-bold">Toplam</div><div className="text-2xl font-black">{job.quantity}</div></div><div className="bg-slate-100 rounded-xl p-4"><div className="text-xs text-slate-500 font-bold">Teslim</div><div className="text-2xl font-black">{job.delivered}</div></div><div className="bg-slate-100 rounded-xl p-4"><div className="text-xs text-slate-500 font-bold">Kalan</div><div className="text-2xl font-black">{remaining}</div></div></div><Input p="Teslim edilen adet" type="number" v={form.amount} c={(v: string) => setForm({ ...form, amount: v })} /><textarea className="border rounded-lg p-3 w-full min-h-[110px]" placeholder="Teslimat notu" value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} /><div className="bg-blue-50 text-blue-800 rounded-xl p-4 font-bold">Bu teslimattan sonra kalan: {after}</div><div className="flex gap-3"><button onClick={close} className="flex-1 bg-slate-200 py-3 rounded-lg font-bold">İptal</button><button onClick={save} className="flex-1 bg-blue-600 text-white py-3 rounded-lg font-bold">Teslim Et</button></div></div></div></div> }
-function EditModal({ job, setJob, save }: any) { return <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50"><div className="bg-white rounded-xl p-6 w-[700px] max-h-[90vh] overflow-auto"><h2 className="text-xl font-black mb-4">İş Düzenle</h2><div className="grid grid-cols-2 gap-3"><Input p="İş Adı" v={job.job_name} c={(v: string) => setJob({ ...job, job_name: v })} /><Input p="Adet" type="number" v={job.quantity} c={(v: string) => setJob({ ...job, quantity: Number(v) })} /><Input p="Fiyat" type="number" v={job.price} c={(v: string) => setJob({ ...job, price: Number(v) })} /><Input p="Kağıt Maliyeti" type="number" v={job.paper_cost} c={(v: string) => setJob({ ...job, paper_cost: Number(v) })} /><Input p="Baskı Maliyeti" type="number" v={job.print_cost} c={(v: string) => setJob({ ...job, print_cost: Number(v) })} /><Input p="Cilt Maliyeti" type="number" v={job.binding_cost} c={(v: string) => setJob({ ...job, binding_cost: Number(v) })} /><Input p="Laminasyon Maliyeti" type="number" v={job.lamination_cost} c={(v: string) => setJob({ ...job, lamination_cost: Number(v) })} /><Input p="İşçilik" type="number" v={job.labor_cost} c={(v: string) => setJob({ ...job, labor_cost: Number(v) })} /><Input p="Teslim Tarihi" type="date" v={job.deadline} c={(v: string) => setJob({ ...job, deadline: v })} /><Input p="Not" v={job.note} c={(v: string) => setJob({ ...job, note: v })} /></div><div className="flex gap-3 mt-5"><button onClick={save} className="bg-blue-600 text-white px-5 py-3 rounded-lg font-bold">Kaydet</button><button onClick={() => setJob(null)} className="bg-slate-200 px-5 py-3 rounded-lg font-bold">Kapat</button></div></div></div> }
+function EditModal({ job, setJob, save }: any) { return <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50"><div className="bg-white rounded-xl p-6 w-[700px] max-h-[90vh] overflow-auto"><h2 className="text-xl font-black mb-4">İş Düzenle</h2><div className="grid grid-cols-2 gap-3"><Input p="İş Adı" v={job.job_name} c={(v: string) => setJob({ ...job, job_name: v })} /><Input p="Adet" type="number" v={job.quantity} c={(v: string) => setJob({ ...job, quantity: Number(v) })} /><Input p="Fiyat" type="number" v={job.price} c={(v: string) => setJob({ ...job, price: Number(v) })} /><Input p="Teslim Tarihi" type="date" v={job.deadline} c={(v: string) => setJob({ ...job, deadline: v })} /><Input p="Not" v={job.note} c={(v: string) => setJob({ ...job, note: v })} /></div><div className="flex gap-3 mt-5"><button onClick={save} className="bg-blue-600 text-white px-5 py-3 rounded-lg font-bold">Kaydet</button><button onClick={() => setJob(null)} className="bg-slate-200 px-5 py-3 rounded-lg font-bold">Kapat</button></div></div></div> }
 function SimpleTable({ head, rows }: any) { return <table className="w-full text-sm"><thead><tr className="border-b text-left text-slate-500">{head.map((h: string) => <th key={h} className="py-2">{h}</th>)}</tr></thead><tbody>{rows.map((r: any[], i: number) => <tr key={i} className="border-b">{r.map((x, k) => <td key={k} className="py-3">{x}</td>)}</tr>)}</tbody></table> }
